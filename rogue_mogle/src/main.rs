@@ -1,9 +1,10 @@
 #[macro_use]
 extern crate vulkano;
-
-extern crate vulkano_win;
-extern crate winit;
 extern crate vulkano_shaders;
+extern crate vulkano_win;
+extern crate cgmath;
+extern crate winit;
+
 
 
 use std::sync::Arc;
@@ -27,7 +28,6 @@ use vulkano::sync::{GpuFuture,FlushError};
 use vulkano::sync;
 use vulkano_win::VkSurfaceBuild;
 use winit::{EventsLoop, WindowBuilder, Window, Event, WindowEvent };
-
 
 fn build_instance () -> Result<Arc<Instance>,InstanceCreationError> {
     let app_info = ApplicationInfo{
@@ -113,16 +113,33 @@ fn main() {
 
     let vertex_buffer = {
         #[derive(Debug, Clone)]
-        struct Vertex {position: [f32; 3]}
-        impl_vertex!(Vertex, position);
+        struct Vertex {position: [f32; 3], color: [ f32;3]}
+        impl_vertex!(Vertex, position, color);
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), [
-            Vertex { position: [ 0.0 ,  0.0 , 0.0]},
-            Vertex { position: [ 0.0 ,  1.0 , 1.0]},
-            Vertex { position: [ 1.0,   1.0 , 0.0]},
-            Vertex { position: [ 1.0 ,  0.0 , 1.0]}
+            Vertex { position: [ -0.5 , -0.5, -0.5], color: [0.0, 0.0, 0.0]},
+            Vertex { position: [ -0.5 ,  0.5, -0.5], color: [0.0, 1.0, 1.0]},
+            Vertex { position: [  0.5 , -0.5, -0.5], color: [1.0, 1.0, 0.0]},
+            Vertex { position: [ -0.5 , -0.5,  0.5], color: [1.0, 0.0, 0.0]},
+            Vertex { position: [ -0.5 , -0.5, -0.5], color: [0.0, 0.0, 0.0]},
+            Vertex { position: [ -0.5 ,  0.5, -0.5], color: [0.0, 1.0, 1.0]}
         ].iter().cloned()).unwrap()
     };
+    let mut dimension = if let Some(dimensions) = window.get_inner_size() {
+        let dimensions: (u32, u32) = dimensions.to_physical(
+            window.get_hidpi_factor()).into();
+        [dimensions.0, dimensions.1]
+    } else {
+        return ;
+    };
+    
+    let proj = cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_2), { dimension[0] as f32 / dimension[1] as f32 }, 0.01, 100.0);
+    let view = cgmath::Matrix4::look_at(cgmath::Point3::new(-1.0,  0.0, 0.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
+    let scale = cgmath::Matrix4::from_scale(0.4);
 
+    let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<vs::ty::ViewDescr>
+        ::new(device.clone(), vulkano::buffer::BufferUsage::all());
+
+    
     let render_pass = Arc::new(single_pass_renderpass!(
         device.clone(),
         attachments: {
@@ -149,7 +166,7 @@ fn main() {
     let pipeline = Arc::new(GraphicsPipeline::start()
                             .vertex_input_single_buffer()
                             .vertex_shader(vs.main_entry_point(), ())
-                            .triangle_list()
+                            .triangle_strip()
                             .viewports_dynamic_scissors_irrelevant(1)
                             .fragment_shader(fs.main_entry_point(),())
                             .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
@@ -162,13 +179,13 @@ fn main() {
 
 
     let mut recreate_swapchain = false;
-
     let mut previous_frame_end = Box::new(sync::now(device.clone())) as  Box<GpuFuture>;
     
+    let rotation_start = std::time::Instant::now();
     loop {
         previous_frame_end.cleanup_finished();
         if recreate_swapchain {
-            let dimension = if let Some(dimensions) = window.get_inner_size() {
+            dimension = if let Some(dimensions) = window.get_inner_size() {
                 let dimensions: (u32, u32) = dimensions.to_physical(
                     window.get_hidpi_factor()).into();
                 [dimensions.0, dimensions.1]
@@ -188,8 +205,27 @@ fn main() {
                 &mut dynamic_state);
             
             recreate_swapchain = false;
+            
         }
+        
+        let uniform_buffer_subbuffer = {
+            let elapsed  = rotation_start.elapsed();
+            let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
+            let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
+            let uniform_data = vs::ty::ViewDescr {
+                world: cgmath::Matrix4::from(rotation).into(),
+                view: (view * scale).into(),
+                proj: proj.into(),
+            };
+            
+            uniform_buffer.next(uniform_data).unwrap()
+        };
 
+         let set = Arc::new(vulkano::descriptor::descriptor_set::PersistentDescriptorSet::start(pipeline.clone(), 0)
+            .add_buffer(uniform_buffer_subbuffer).unwrap()
+            .build().unwrap()
+         );
+        
         let (image_num, acquire_future) =
             match swapchain::acquire_next_image(swapchain.clone(), None) {
                 Ok(r) => r,
@@ -200,20 +236,19 @@ fn main() {
                 Err(err) => panic!("{:?}",err)
             };
         
-        
         let clear_values = vec!([1.0, 1.0, 1.0, 1.0].into());
 
         let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(
             device.clone(), queue.family()).unwrap()
             .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
             .unwrap()
-            .draw(pipeline.clone(), &dynamic_state, vertex_buffer.clone(), (), ())
+            .draw(pipeline.clone(), &dynamic_state, vertex_buffer.clone(), set.clone(), () )
             .unwrap()
             .end_render_pass()
             .unwrap()
             .build()
             .unwrap();
-
+        
         let future = previous_frame_end
             .join(acquire_future)
             .then_execute(queue.clone(), command_buffer)
@@ -245,8 +280,6 @@ fn main() {
 }
 
 
-
-
 fn window_size_dependent_setup(
     images: &[Arc<SwapchainImage<Window>>],
     render_pass: Arc<RenderPassAbstract+Send+Sync>,
@@ -258,7 +291,7 @@ fn window_size_dependent_setup(
     let viewport = Viewport {
         origin: [0.0, 0.0 ],
         dimensions: [dimensions[0] as f32, dimensions[1] as f32],
-        depth_range: 0.0 .. 1.0,
+        depth_range: 0.0 .. 10.0,
     };
     dynamic_state.viewports = Some(vec!(viewport));
         
@@ -271,16 +304,31 @@ fn window_size_dependent_setup(
     }).collect::<Vec<_>>()
 }
 
+
+// vulkano_shader!{
+//     mod_name: vs,
+//     ty: "vertex",
+//     path: "src/bin/teapot/vert.glsl"
+// }
+
+// vulkano_shader!{
+//     mod_name: fs,
+//     ty: "fragment",
+//     path: "src/bin/teapot/frag.glsl"
+// }
+
+
+
 mod vs {
     vulkano_shaders::shader!{
         ty: "vertex",
-        path: "src/shader/vert.glsl" 
+        path: "src/shader/vert.glsl"
     }
 }
 
 mod fs {
     vulkano_shaders::shader!{
         ty: "fragment",
-            path: "src/shader/frag.glsl" 
+        path: "src/shader/frag.glsl" 
     }
 }
