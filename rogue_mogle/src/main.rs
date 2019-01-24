@@ -6,9 +6,14 @@ extern crate winit;
 extern crate vulkano_shaders;
 
 
+use std::sync::Arc;
+use std::option::Option;
+
 use vulkano::buffer::{CpuAccessibleBuffer,BufferUsage};
 use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::device::{Device, Queue};
+use vulkano::framebuffer::{Subpass, Framebuffer,
+                           RenderPassAbstract, FramebufferAbstract};
 use vulkano::instance::{Instance,ApplicationInfo,Version,InstanceCreationError};
 use vulkano::instance::PhysicalDevice;
 use vulkano::image::SwapchainImage;
@@ -16,15 +21,13 @@ use vulkano::swapchain;
 use vulkano::swapchain::{AcquireError,
                          Surface, Swapchain, SurfaceTransform,
                          PresentMode, SwapchainCreationError};
-use vulkano_win::VkSurfaceBuild;
-use winit::{EventsLoop, WindowBuilder, Window, Event, WindowEvent };
-use std::sync::Arc;
-use std::option::Option;
 use vulkano::pipeline::GraphicsPipeline;
 use vulkano::pipeline::viewport::Viewport;
 use vulkano::sync::{GpuFuture,FlushError};
 use vulkano::sync;
-use vulkano::framebuffer::{Subpass, Framebuffer, RenderPassAbstract, FramebufferAbstract};
+use vulkano_win::VkSurfaceBuild;
+use winit::{EventsLoop, WindowBuilder, Window, Event, WindowEvent };
+
 
 fn build_instance () -> Result<Arc<Instance>,InstanceCreationError> {
     let app_info = ApplicationInfo{
@@ -38,10 +41,10 @@ fn build_instance () -> Result<Arc<Instance>,InstanceCreationError> {
 
 fn choose_queue<T>(physical: &PhysicalDevice , surface: &Arc<Surface<T>>)->(Arc<Device>, Arc<Queue>) {
 
-   let queue_family = physical.queue_families()
+    let queue_family = physical.queue_families()
         .find( |&q|  {q.supports_graphics() && surface.is_supported(q).unwrap_or(false) } )
         .expect("Couldn't find a graphical queue family.");
-
+    
     let (device, mut queues) = {
         let device_ext = vulkano::device::DeviceExtensions{
             khr_swapchain : true,
@@ -72,6 +75,7 @@ fn create_swapchain<T> (surface: &Arc<Surface<T>>,
     } else {
         [1024,1024]
     };
+//    println!("{:?}", initial_dimension);
     Swapchain::new(device.clone(),
                    surface.clone(),
                    caps.min_image_count,
@@ -80,24 +84,28 @@ fn create_swapchain<T> (surface: &Arc<Surface<T>>,
                    1,
                    caps.supported_usage_flags,
                    queue,
-                   SurfaceTransform::Identity, alpha, PresentMode::Fifo,
+                   SurfaceTransform::Identity,
+                   alpha,
+                   PresentMode::Fifo,
                    true,
                    None)
         .expect("Failed to create swapchain")
 }
 
 fn main() {
-    let instance =  build_instance().expect("Failed to create instance");
+    let instance =  build_instance()
+        .expect("Failed to create instance");
 
     let mut events_loop = EventsLoop::new();
-  
 
-
-    let surface = WindowBuilder::new().build_vk_surface(&events_loop,instance.clone()).unwrap();
-
-    let physical = PhysicalDevice::enumerate(&instance).next().expect("No device available");
+    let surface = WindowBuilder::new()
+        .build_vk_surface(&events_loop,instance.clone())
+        .expect("Failed to create a  Window");
+    
+    let physical = PhysicalDevice::enumerate(&instance).next()
+        .expect("No device available");
+    
     let (device,queue) = choose_queue(&physical, &surface);
-
 
     let window = surface.window();
 
@@ -105,45 +113,15 @@ fn main() {
 
     let vertex_buffer = {
         #[derive(Debug, Clone)]
-        struct Vertex {position: [f32; 2]}
+        struct Vertex {position: [f32; 3]}
         impl_vertex!(Vertex, position);
         CpuAccessibleBuffer::from_iter(device.clone(), BufferUsage::all(), [
-            Vertex { position: [-0.5 , -0.25]},
-            Vertex { position: [ 0.0 ,  0.5 ]},
-            Vertex { position: [ 0.25,  0.1 ]}
+            Vertex { position: [ 0.0 ,  0.0 , 0.0]},
+            Vertex { position: [ 0.0 ,  1.0 , 1.0]},
+            Vertex { position: [ 1.0,   1.0 , 0.0]},
+            Vertex { position: [ 1.0 ,  0.0 , 1.0]}
         ].iter().cloned()).unwrap()
     };
-
-    mod vs {
-        vulkano_shaders::shader!{
-            ty: "vertex",
-            src: "
-
-#version 450
-
-layout(location = 0) in vec2 position;
-
-void main(){
-    gl_Position = vec4(position, 0.0, 1.0);
-}"
-        }
-    }
-    mod fs {
-        vulkano_shaders::shader!{
-            ty: "fragment",
-            src: "
-
-#version 450
-
-layout(location = 0) out vec4 f_color;
-
-void main(){
-    f_color  = vec4(1.0, 0.0, 0.0, 1.0);
-}"
-        }
-    }
-    let vs = vs::Shader::load(device.clone()).unwrap();
-    let fs = fs::Shader::load(device.clone()).unwrap();
 
     let render_pass = Arc::new(single_pass_renderpass!(
         device.clone(),
@@ -161,6 +139,13 @@ void main(){
         }
     ).unwrap());
 
+
+    
+
+    let vs = vs::Shader::load(device.clone()).unwrap();
+    let fs = fs::Shader::load(device.clone()).unwrap();
+      
+    
     let pipeline = Arc::new(GraphicsPipeline::start()
                             .vertex_input_single_buffer()
                             .vertex_shader(vs.main_entry_point(), ())
@@ -169,11 +154,11 @@ void main(){
                             .fragment_shader(fs.main_entry_point(),())
                             .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
                             .build(device.clone())
-                            .unwrap());
+                            .expect("Pipeline creation failed"));
 
     let mut dynamic_state = DynamicState{line_width: None, viewports:None, scissors:None };
+    
     let mut framebuffers = window_size_dependent_setup( &images, render_pass.clone(), &mut dynamic_state);
-
 
 
     let mut recreate_swapchain = false;
@@ -215,6 +200,7 @@ void main(){
                 Err(err) => panic!("{:?}",err)
             };
         
+        
         let clear_values = vec!([1.0, 1.0, 1.0, 1.0].into());
 
         let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(
@@ -242,7 +228,7 @@ void main(){
                 previous_frame_end = Box::new( sync::now(device.clone() ) ) as Box<_>;
             }
             Err(e) => {
-                println!("{:?}",e);
+               println!("{:?}",e);
                 previous_frame_end = Box::new( sync::now(device.clone() ) ) as Box<_>;
             }
         }
@@ -260,11 +246,13 @@ void main(){
 
 
 
+
 fn window_size_dependent_setup(
     images: &[Arc<SwapchainImage<Window>>],
     render_pass: Arc<RenderPassAbstract+Send+Sync>,
     dynamic_state: &mut DynamicState)
-    -> Vec<Arc<FramebufferAbstract + Send + Sync> >{
+    -> Vec<Arc<FramebufferAbstract + Send + Sync> >
+{
     let dimensions = images[0].dimensions();
 
     let viewport = Viewport {
@@ -273,7 +261,7 @@ fn window_size_dependent_setup(
         depth_range: 0.0 .. 1.0,
     };
     dynamic_state.viewports = Some(vec!(viewport));
-
+        
     images.iter().map(|image|{
         Arc::new(
             Framebuffer::start(render_pass.clone())
@@ -281,4 +269,18 @@ fn window_size_dependent_setup(
                 .build().unwrap()
         )as Arc<FramebufferAbstract + Send + Sync>
     }).collect::<Vec<_>>()
+}
+
+mod vs {
+    vulkano_shaders::shader!{
+        ty: "vertex",
+        path: "src/shader/vert.glsl" 
+    }
+}
+
+mod fs {
+    vulkano_shaders::shader!{
+        ty: "fragment",
+            path: "src/shader/frag.glsl" 
+    }
 }
