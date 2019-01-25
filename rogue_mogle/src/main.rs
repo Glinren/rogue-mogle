@@ -6,12 +6,17 @@ extern crate vulkano_shaders;
 extern crate cgmath;
 extern crate winit;
 
+mod resources;
+
+use resources::vs;
+use resources::fs;
 
 use std::iter;
 use std::sync::Arc;
 use std::option::Option;
 use std::fmt;
 use std::error;
+
 
 use vulkano::image::attachment::AttachmentImage;
 use vulkano::buffer::{CpuAccessibleBuffer,BufferUsage};
@@ -37,6 +42,7 @@ use vulkano_win::VkSurfaceBuild;
 use winit::{EventsLoop, WindowBuilder, Window, Event, WindowEvent };
 
 use cgmath::{ Matrix4, Point3, Vector3, Rad};
+
 fn build_instance () -> Result<Arc<Instance>,InstanceCreationError> {
     let app_info = ApplicationInfo{
         application_name: None,
@@ -61,7 +67,6 @@ fn choose_queue<T>(physical: &PhysicalDevice , surface: &Arc<Surface<T>>)->(Arc<
         Device::new(*physical, physical.supported_features(), &device_ext,
                     [(queue_family, 0.5)].iter().cloned())
             .expect("Failed to create logical device.")
-            
     };
     (device,queues.next().unwrap())
 
@@ -106,7 +111,8 @@ impl error::Error for IndeterminableDimensionsError{
     }
 }
 
-fn get_dimensions(window: &winit::Window) -> Result<[ u32;2],IndeterminableDimensionsError> {
+fn get_dimensions(surface: &Arc<Surface<winit::Window>>) -> Result<[ u32;2],IndeterminableDimensionsError> {
+    let window = surface.window();
     window.get_inner_size()
         .and_then(|dimensions|  {
             let idimensions: (u32, u32) = dimensions.to_physical(window.get_hidpi_factor()).into();
@@ -126,7 +132,7 @@ fn create_swapchain (surface: &Arc<Surface<Window>>,
     let alpha = caps.supported_composite_alpha.iter().next().unwrap();
     let format = caps.supported_formats[0].0;
 
-    let initial_dimension = get_dimensions(surface.window())
+    let initial_dimension = get_dimensions(&surface)
         .expect("Couldn't determine window dimensions.");
     
     Swapchain::new(device.clone(),
@@ -144,6 +150,42 @@ fn create_swapchain (surface: &Arc<Surface<Window>>,
                    None)
 }
 
+#[derive(Debug,Clone)]
+struct RendererInitializationError;
+
+impl fmt::Display for RendererInitializationError {
+    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+        write!(f, "Couldn't initialize the Renderer.")
+    }
+}
+
+impl error::Error for RendererInitializationError{
+    fn description(&self) -> &str {
+        "couldn't initialize the Renderer"
+    }
+
+    fn cause(&self) -> Option<&error::Error> {
+        // Generic error, underlying cause isn't tracked.
+        None
+    }
+}
+
+
+#[derive(Debug)]
+struct Renderer {
+    device: Arc<Device>,
+}
+
+impl Renderer {
+    pub fn new(device: Arc<Device>)->Result<Renderer, RendererInitializationError> {
+        Ok(Renderer{
+            device: device,
+        })
+    }
+    
+}
+
+
 fn main() {
     let instance =  build_instance()
         .expect("Failed to create instance");
@@ -154,22 +196,22 @@ fn main() {
         .build_vk_surface(&events_loop,instance.clone())
         .expect("Failed to create a  Window");
     
-    let physical = PhysicalDevice::enumerate(&instance).next()
+    let physical = PhysicalDevice::enumerate(&instance)
+        .next()
         .expect("No device available");
     
     let (device,queue) = choose_queue(&physical, &surface);
 
+    let renderer = Renderer::new(device.clone()).unwrap();
 
     let (mut swapchain,images) = create_swapchain(&surface, &physical, &device, &queue)
         .expect("Failed to create swapchain");
 
     let vertex_buffer = create_tetraeder_as_triangle_stripe(device.clone());
     
-    let mut dimension = get_dimensions(surface.window()).unwrap();
-    
-//    let proj = cgmath::perspective(cgmath::Rad(std::f32::consts::FRAC_PI_2), { dimension[0] as f32 / dimension[1] as f32 }, 0.01, 100.0);
-//    let view = cgmath::Matrix4::look_at(cgmath::Point3::new(-1.0,  0.0, 0.0), cgmath::Point3::new(0.0, 0.0, 0.0), cgmath::Vector3::new(0.0, -1.0, 0.0));
-    let scale = cgmath::Matrix4::from_scale(0.4);
+    let mut dimension = get_dimensions(&surface).unwrap();
+
+    let scale = cgmath::Matrix4::from_scale(0.8);
 
     let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<vs::ty::ViewDescr>
         ::new(device.clone(), vulkano::buffer::BufferUsage::all());
@@ -177,7 +219,6 @@ fn main() {
     
     let vs = vs::Shader::load(device.clone()).unwrap();
     let fs = fs::Shader::load(device.clone()).unwrap();
-    println!("{:?}", swapchain.format());
     let render_pass = Arc::new(single_pass_renderpass!(
         device.clone(),
         attachments: {
@@ -210,11 +251,12 @@ fn main() {
     let mut previous_frame_end = Box::new(sync::now(device.clone())) as  Box<GpuFuture>;
     
     let rotation_start = std::time::Instant::now();
+
     loop {
         previous_frame_end.cleanup_finished();
         
         if recreate_swapchain {
-            dimension = get_dimensions(surface.window())
+            dimension = get_dimensions(&surface)
                 .expect("Couldn't determine window dimensions.");
             
             let (new_swapchain, new_images) = match swapchain.recreate_with_dimension(dimension){
@@ -241,7 +283,7 @@ fn main() {
             
             let aspect_ratio = dimension[0] as f32 / dimension[1] as f32;
             let proj = cgmath::perspective(Rad(std::f32::consts::FRAC_PI_2), aspect_ratio, 0.01, 100.0);
-            let view = Matrix4::look_at(Point3::new(0.3, 0.3, 1.0), Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, -1.0, 0.0));
+            let view = Matrix4::look_at(Point3::new(1.0, 1.0, 1.0), Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
             
             let uniform_data = vs::ty::ViewDescr {
                 world: cgmath::Matrix4::from(rotation).into(),
@@ -266,18 +308,22 @@ fn main() {
                 },
                 Err(err) => panic!("{:?}",err)
             };
-        let clear_values = vec![[0.0, 0.5, 0.5, 1.0].into(),ClearValue::Depth(1.0)];
+        
 
-        let command_buffer = AutoCommandBufferBuilder::primary_one_time_submit(
-            device.clone(), queue.family()).unwrap()
-            .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
-            .unwrap()
-            .draw(pipeline.clone(), &DynamicState::none(), vec!(vertex_buffer.clone()), set.clone(), () )
-            .unwrap()
-            .end_render_pass()
-            .unwrap()
-            .build()
-            .unwrap();
+        let command_buffer = {
+            let clear_values = vec![[0.0, 0.5, 0.5, 1.0].into(),ClearValue::Depth(1.0)];
+
+            AutoCommandBufferBuilder::primary_one_time_submit(
+                device.clone(), queue.family()).unwrap()
+                .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
+                .unwrap()
+                .draw(pipeline.clone(), &DynamicState::none(), vec!(vertex_buffer.clone()), set.clone(), () )
+                .unwrap()
+                .end_render_pass()
+                .unwrap()
+                .build()
+                .unwrap()
+        };
         
         let future = previous_frame_end
             .join(acquire_future)
@@ -293,7 +339,7 @@ fn main() {
                 previous_frame_end = Box::new( sync::now(device.clone() ) ) as Box<_>;
             }
             Err(e) => {
-               println!("{:?}",e);
+                println!("{:?}",e);
                 previous_frame_end = Box::new( sync::now(device.clone() ) ) as Box<_>;
             }
         }
@@ -350,17 +396,4 @@ fn window_size_dependent_setup(
 
 
 
-
-mod vs {
-    vulkano_shaders::shader!{
-        ty: "vertex",
-        path: "src/shader/vert.glsl"
-    }
-}
-
-mod fs {
-    vulkano_shaders::shader!{
-        ty: "fragment",
-        path: "src/shader/frag.glsl" 
-    }
-}
+// TODO(Glinren): tell cargo that these are dependent on the shader files.
