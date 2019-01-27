@@ -1,5 +1,6 @@
 #[macro_use]
 
+// TODO(Glinren): tell cargo that these are dependent on the shader files.
 
 pub mod vs {
     vulkano_shaders::shader!{

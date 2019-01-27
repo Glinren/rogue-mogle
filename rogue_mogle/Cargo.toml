@@ -1,7 +1,10 @@
 [package]
 name = "rogue_mogle"
 version = "0.1.0"
-authors = ["Arne Bargholz <bargholz@theochem.uni-stuttgart.de>"]
+authors = ["Arne <arne.zxy333@gmail.com>"]
+publish = false
+
+include = ["src/**/*","src/resources/shader/*.glsl"]
 
 [dependencies]
 

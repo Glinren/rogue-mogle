@@ -6,26 +6,19 @@ extern crate vulkano_shaders;
 extern crate cgmath;
 extern crate winit;
 
+
 mod resources;
 
-use resources::vs;
-use resources::fs;
 
-use std::iter;
 use std::sync::Arc;
 use std::option::Option;
 use std::fmt;
 use std::error;
 
 
-use vulkano::image::attachment::AttachmentImage;
 use vulkano::buffer::{CpuAccessibleBuffer,BufferUsage};
-use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
 use vulkano::device::{Device, Queue};
-use vulkano::format::Format;
-use vulkano::format::ClearValue;
-use vulkano::framebuffer::{Subpass, Framebuffer,
-                           RenderPassAbstract, FramebufferAbstract};
+//use vulkano::format::Format;
 use vulkano::instance::{Instance,ApplicationInfo,Version,InstanceCreationError};
 use vulkano::instance::PhysicalDevice;
 use vulkano::image::SwapchainImage;
@@ -33,9 +26,7 @@ use vulkano::swapchain;
 use vulkano::swapchain::{AcquireError,
                          Surface, Swapchain, SurfaceTransform,
                          PresentMode, SwapchainCreationError};
-use vulkano::pipeline::{GraphicsPipeline,GraphicsPipelineAbstract};
-use vulkano::pipeline::vertex::SingleBufferDefinition;
-use vulkano::pipeline::viewport::Viewport;
+//use vulkano::pipeline::viewport::Viewport;
 use vulkano::sync::{GpuFuture,FlushError};
 use vulkano::sync;
 use vulkano_win::VkSurfaceBuild;
@@ -72,9 +63,9 @@ fn choose_queue<T>(physical: &PhysicalDevice , surface: &Arc<Surface<T>>)->(Arc<
 
 }
 
-
+// TODO Glinren hide the CpuAccessible buffer in the renderer
 #[derive(Debug, Clone)]
-struct Vertex {position: [f32; 3], color: [ f32;3]}
+pub struct Vertex {position: [f32; 3], color: [ f32;3]}
 
 
 fn create_tetraeder_as_triangle_stripe(device: Arc<Device>) -> Arc<CpuAccessibleBuffer<[Vertex]>>
@@ -88,7 +79,6 @@ fn create_tetraeder_as_triangle_stripe(device: Arc<Device>) -> Arc<CpuAccessible
         Vertex { position: [ -0.5 , -0.5, -0.5], color: [0.0, 0.0, 0.0]},
         Vertex { position: [ -0.5 ,  0.5,  0.5], color: [0.0, 1.0, 1.0]}
     ].iter().cloned()).unwrap()
-
 }
 
 #[derive(Debug,Clone)]
@@ -124,7 +114,8 @@ fn get_dimensions(surface: &Arc<Surface<winit::Window>>) -> Result<[ u32;2],Inde
 fn create_swapchain (surface: &Arc<Surface<Window>>,
                      physical: &PhysicalDevice,
                      device: &Arc<Device>,
-                     queue: &Arc<Queue>) -> Result<(Arc<Swapchain<Window>>,std::vec::Vec<Arc<SwapchainImage<Window>>>),
+                     queue: &Arc<Queue>) -> Result<(Arc<Swapchain<Window>>,
+                                                    std::vec::Vec<Arc<SwapchainImage<Window>>>),
                                                    SwapchainCreationError> {
 
     let caps = surface.capabilities(*physical)
@@ -150,16 +141,52 @@ fn create_swapchain (surface: &Arc<Surface<Window>>,
                    None)
 }
 
-#[derive(Debug,Clone)]
-struct RendererInitializationError;
 
-impl fmt::Display for RendererInitializationError {
-    fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
-        write!(f, "Couldn't initialize the Renderer.")
+mod render {
+    use resources;
+
+
+    use cgmath::Matrix4 ;
+    use std::sync::Arc;
+    use vulkano::device::{Device, Queue};
+    use std::fmt;
+    use std::error;
+    use std::iter;
+    
+    use vulkano::command_buffer::{AutoCommandBufferBuilder, DynamicState};
+    use vulkano::format::ClearValue;
+    use vulkano::memory::pool::StdMemoryPool;
+    use vulkano::image::ImageAccess;
+    use vulkano::format::Format;
+
+    use vulkano::swapchain::Surface;
+    use vulkano::sync::GpuFuture;
+    use vulkano::pipeline::viewport::Viewport;
+    use vulkano::pipeline::{GraphicsPipeline,GraphicsPipelineAbstract};
+    use vulkano::pipeline::vertex::SingleBufferDefinition;
+    pub use Vertex;
+    use vulkano::image::attachment::AttachmentImage;
+    use vulkano::framebuffer::{Subpass, Framebuffer,
+                               RenderPassAbstract, FramebufferAbstract};
+    use resources::vs;
+    use resources::fs;
+    use vulkano::image::SwapchainImage;
+    use winit::Window;
+    // use main::scope::CustomRenderPassDescr;
+    // #[derive(Debug)]
+    // struct Shader {
+    //     vs: vs::Shader;
+    // }
+    #[derive(Debug,Clone)]
+    pub struct RendererInitializationError;
+
+    impl fmt::Display for RendererInitializationError {
+        fn fmt(&self, f: &mut fmt::Formatter) -> fmt::Result {
+            write!(f, "Couldn't initialize the Renderer.")
+        }
     }
-}
 
-impl error::Error for RendererInitializationError{
+    impl error::Error for RendererInitializationError{
     fn description(&self) -> &str {
         "couldn't initialize the Renderer"
     }
@@ -170,21 +197,226 @@ impl error::Error for RendererInitializationError{
     }
 }
 
-
-#[derive(Debug)]
-struct Renderer {
-    device: Arc<Device>,
-}
-
-impl Renderer {
-    pub fn new(device: Arc<Device>)->Result<Renderer, RendererInitializationError> {
-        Ok(Renderer{
-            device: device,
-        })
+    pub struct RendererBuilder {
+        graphics_queue: Arc<Queue>,
+    }
+        
+    
+    fn check_enabled_extensions(device: &Arc<Device>)-> bool {
+        let required_ext = vulkano::device::DeviceExtensions{
+            khr_swapchain : true,
+            .. vulkano::device::DeviceExtensions::none()
+        };
+        device.loaded_extensions().intersection( &required_ext) == required_ext
     }
     
-}
 
+    fn check_graphics_queue_properties(queue: &Arc<Queue>)-> bool{
+        queue.family().supports_graphics()
+    }
+
+    // TODO(Glinren) Builder can be eliminated
+    impl RendererBuilder {
+        pub fn new(graphics_queue: Arc<Queue>)->Result<RendererBuilder, RendererInitializationError> {
+            // TODO(Glinren) be more specific with the error
+            // The error should contain enough information to understand what precondition was violated
+            if  check_enabled_extensions(graphics_queue.device())
+                && check_graphics_queue_properties(&graphics_queue){
+                    Ok(RendererBuilder{
+                        graphics_queue: graphics_queue,
+                    })
+                } else { Err(RendererInitializationError)}
+        }
+
+
+        // pub fn build_for_render_targets<T: ImageAccess + Sync + Send>
+        pub fn build_for_render_targets
+            (self, images: std::vec::Vec<Arc<SwapchainImage<Window>>>) -> Result<Renderer, RendererInitializationError>{
+                Renderer::new(self.graphics_queue, images)
+        }
+    }
+
+    fn create_render_pass(device: Arc<Device>,
+                          format: Format)-> Result<Arc<RenderPassAbstract+Send+Sync>,
+                                                   RendererInitializationError>{
+        Ok(Arc::new(single_pass_renderpass!(
+            device.clone(),
+            attachments: {
+                color: {
+                    load: Clear,
+                    store: Store,
+                    format: format,
+                    samples: 1,
+                },
+                depth: { 
+                    load: Clear,
+                    store: DontCare,
+                    format: Format::D32Sfloat,
+                    samples: 1,
+                }
+            },
+            pass: {
+                color: [color],
+                depth_stencil: {depth}
+            }
+        ).unwrap()))
+    }
+
+    //fn setup_pipeline<T: ImageAccess + Sync + Send+ SafeDeref>(
+    fn setup_pipeline(
+        device: Arc<Device>,
+        vs: &resources::vs::Shader,
+        fs: &resources::fs::Shader,
+        images: &std::vec::Vec<Arc<SwapchainImage<Window>>>,
+        render_pass: &Arc<RenderPassAbstract+Send+Sync>)
+        ->(Arc<GraphicsPipelineAbstract+ Send+ Sync>, Vec<Arc<FramebufferAbstract + Send + Sync> >)
+    {
+        let dimensions = images[0].dimensions();
+        let dimensions = [dimensions.width(), dimensions.height()];
+        let depth_buffer = AttachmentImage::new(device.clone(), dimensions, Format::D32Sfloat).unwrap();
+        let framebuffers = images.iter().map(|image|{
+            Arc::new(
+                Framebuffer::start(render_pass.clone())
+                    .add(image.clone()).unwrap()
+                    .add(depth_buffer.clone()).unwrap()
+                    .build().unwrap()
+            )as Arc<FramebufferAbstract + Send + Sync>
+        }).collect::<Vec<_>>();
+    
+        let pipeline = Arc::new(GraphicsPipeline::start()
+                                .vertex_input(SingleBufferDefinition::<Vertex>::new())
+                                .vertex_shader(vs.main_entry_point(), ())
+                                .triangle_strip()
+                                .viewports_dynamic_scissors_irrelevant(1)
+                                .viewports(iter::once(Viewport {
+                                    origin: [0.0, 0.0 ],
+                                    dimensions: [dimensions[0] as f32, dimensions[1] as f32],
+                                    depth_range: 0.0 .. 1.0, }
+                                ))
+                                .fragment_shader(fs.main_entry_point(), ())
+                                .depth_stencil_simple_depth()
+                                .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
+                                .build(device.clone())
+                                .expect("Pipeline creation failed")) as Arc<GraphicsPipelineAbstract+ Send+ Sync>;
+        (pipeline, framebuffers)
+    }
+
+
+
+    pub struct Renderer {
+        graphics_queue: Arc<Queue>,
+        render_pass: Arc<RenderPassAbstract+Send+Sync>,
+        vertex_shader: resources::vs::Shader,
+        fragment_shader: resources::fs::Shader,
+        format: Format,
+        pub pipeline:  Arc<GraphicsPipelineAbstract+ Send+ Sync>,
+        pub framebuffers: Vec<Arc<FramebufferAbstract + Send + Sync>>,
+        uniform_buffer: vulkano::buffer::CpuBufferPool<vs::ty::ViewDescr>
+    }
+
+    
+    impl Renderer{
+        //        pub fn new<T: ImageAccess + Sync + Send>
+        pub fn new
+            (queue: Arc<Queue>,
+             images: std::vec::Vec<Arc<SwapchainImage<Window>>>
+            ) ->Result<Renderer,RendererInitializationError> {
+                let device = queue.device().clone();
+                let vs = vs::Shader::load(device.clone()).unwrap() ;
+                let fs = fs::Shader::load(device.clone()).unwrap() ;
+                if let Ok(render_pass ) = create_render_pass(device.clone(), images[0].format()){
+                    let (pipeline, framebuffers ) = setup_pipeline(device.clone(),&vs, &fs,&images, &render_pass); 
+                    Ok(Renderer{
+                        graphics_queue: queue,
+                        vertex_shader: vs,
+                        fragment_shader: fs,
+                        format: images[0].format(),
+                        render_pass: render_pass,
+                        pipeline: pipeline,
+                        framebuffers: framebuffers,
+                        uniform_buffer: vulkano::buffer::cpu_pool::CpuBufferPool::<vs::ty::ViewDescr>::new(device.clone(), vulkano::buffer::BufferUsage::all()),
+                    })
+                } else { Err(RendererInitializationError)}
+
+            }
+        
+        pub fn render(&self,
+                      world: Matrix4<f32>,
+                      view: Matrix4<f32>,
+                      proj: Matrix4<f32>,
+                      target_num: usize,
+                      vertex_buffer: &Arc<vulkano::buffer::CpuAccessibleBuffer<[Vertex]>>,
+                      future: vulkano::sync::JoinFuture<Box<dyn vulkano::sync::GpuFuture>, vulkano::swapchain::SwapchainAcquireFuture<winit::Window>>)
+                      ->vulkano::command_buffer::CommandBufferExecFuture<
+                vulkano::sync::JoinFuture<
+                        Box<dyn vulkano::sync::GpuFuture>,
+                    vulkano::swapchain::SwapchainAcquireFuture<winit::Window>
+                        >,
+            vulkano::command_buffer::AutoCommandBuffer>
+        {
+            let set = Arc::new(
+                vulkano::descriptor::descriptor_set::PersistentDescriptorSet::start(
+                    self.pipeline.clone(),0)
+                    .add_buffer(self.create_subbuffer(world,view,proj).unwrap() ).unwrap()
+                    .build().unwrap()
+            );
+
+            let command_buffer = {
+                let clear_values = vec![[0.0, 0.5, 0.5, 1.0].into(),ClearValue::Depth(1.0)];
+                
+                AutoCommandBufferBuilder::primary_one_time_submit(
+                    self.graphics_queue.device().clone(), self.graphics_queue.family()).unwrap()
+                    .begin_render_pass(self.framebuffers[target_num].clone(), false, clear_values)
+                    .unwrap()
+                    .draw(self.pipeline.clone(),
+                          &DynamicState::none(),
+                          vec!(vertex_buffer.clone()), set.clone(), () )
+                    .unwrap()
+                    .end_render_pass()
+                    .unwrap()
+                    .build()
+                    .unwrap()
+            };
+            future
+              .then_execute(self.graphics_queue.clone(), command_buffer)
+                .unwrap()
+        }
+        
+        fn create_subbuffer(&self, world: Matrix4<f32>, view: Matrix4<f32>, proj: Matrix4<f32>)
+                       -> Result<vulkano::buffer::cpu_pool::CpuBufferPoolSubbuffer<resources::vs::ty::ViewDescr,Arc<StdMemoryPool>>, vulkano::memory::DeviceMemoryAllocError>
+         {
+             let uniform_data = vs::ty::ViewDescr {
+                 world: world.into(),
+                 view: view.into(),
+                 proj: proj.into(),
+                
+             };
+             self.uniform_buffer.next(uniform_data)
+         }
+
+    
+
+        pub fn can_render_to<T>(&self, surface: &Arc<Surface<T>> )-> bool {
+            surface.is_supported(self.graphics_queue.family()).unwrap_or(false) 
+        }
+
+        pub fn  set_render_targets(
+            &mut self, images: std::vec::Vec<Arc<SwapchainImage<Window>>>)
+            ->Result<(),RendererInitializationError >{
+            if self.format != images[0].format() {
+                self.render_pass = create_render_pass(self.graphics_queue.device().clone(), images[0].format())
+                    .expect(" problem creating render pass");
+                self.format = images[0].format();
+            }
+            let (pipeline, framebuffers ) = setup_pipeline(
+                self.graphics_queue.device().clone(),
+                &self.vertex_shader, &self.fragment_shader, &images, &self.render_pass);
+            self.pipeline = pipeline;
+            self.framebuffers = framebuffers;
+            Ok(())
+        }
+    }
+}
 
 fn main() {
     let instance =  build_instance()
@@ -202,49 +434,27 @@ fn main() {
     
     let (device,queue) = choose_queue(&physical, &surface);
 
-    let renderer = Renderer::new(device.clone()).unwrap();
-
-    let (mut swapchain,images) = create_swapchain(&surface, &physical, &device, &queue)
-        .expect("Failed to create swapchain");
 
     let vertex_buffer = create_tetraeder_as_triangle_stripe(device.clone());
     
     let mut dimension = get_dimensions(&surface).unwrap();
 
+    
+    let (mut swapchain,images) = create_swapchain(&surface, &physical, &device, &queue)
+        .expect("Failed to create swapchain");
+
+    let mut renderer = render::RendererBuilder::new(queue.clone())
+        .unwrap()
+        .build_for_render_targets(images)
+        .unwrap();
+
+    if ! renderer.can_render_to(&surface) {
+        return
+    }
+
+
     let scale = cgmath::Matrix4::from_scale(0.8);
 
-    let uniform_buffer = vulkano::buffer::cpu_pool::CpuBufferPool::<vs::ty::ViewDescr>
-        ::new(device.clone(), vulkano::buffer::BufferUsage::all());
-
-    
-    let vs = vs::Shader::load(device.clone()).unwrap();
-    let fs = fs::Shader::load(device.clone()).unwrap();
-    let render_pass = Arc::new(single_pass_renderpass!(
-        device.clone(),
-        attachments: {
-            color: {
-                load: Clear,
-                store: Store,
-                format: swapchain.format(),
-                samples: 1,
-            },
-            depth: { 
-                load: Clear,
-                store: DontCare,
-                format: Format::D32Sfloat,
-                samples: 1,
-            }
-        },
-        pass: {
-            color: [color],
-            depth_stencil: {depth}
-        }
-    ).unwrap());
-
-
-    
-    let (mut pipeline, mut framebuffers) = window_size_dependent_setup(device.clone(), &vs, &fs, &images,
-                                                                       render_pass.clone());
 
 
     let mut recreate_swapchain = false;
@@ -266,38 +476,23 @@ fn main() {
             };
             
             swapchain = new_swapchain;
-
-            let ( new_pipeline, new_framebuffers) = window_size_dependent_setup(device.clone(), &vs, &fs, &new_images,
-                                                                                render_pass.clone());
-            pipeline = new_pipeline;
-            framebuffers = new_framebuffers;
+            renderer.set_render_targets(new_images).expect("Error");
             
             recreate_swapchain = false;
             
         }
         
-        let uniform_buffer_subbuffer = {
-            let elapsed  = rotation_start.elapsed();
-            let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
-            let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
+        let elapsed  = rotation_start.elapsed();
+        let rotation = elapsed.as_secs() as f64 + elapsed.subsec_nanos() as f64 / 1_000_000_000.0;
+        let rotation = cgmath::Matrix3::from_angle_y(cgmath::Rad(rotation as f32));
             
-            let aspect_ratio = dimension[0] as f32 / dimension[1] as f32;
-            let proj = cgmath::perspective(Rad(std::f32::consts::FRAC_PI_2), aspect_ratio, 0.01, 100.0);
-            let view = Matrix4::look_at(Point3::new(1.0, 1.0, 1.0), Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
+        let aspect_ratio = dimension[0] as f32 / dimension[1] as f32;
+        let proj = cgmath::perspective(Rad(std::f32::consts::FRAC_PI_2), aspect_ratio, 0.01, 100.0);
+        let view = Matrix4::look_at(Point3::new(1.0, 1.0, 1.0), Point3::new(0.0, 0.0, 0.0), Vector3::new(0.0, 1.0, 0.0));
             
-            let uniform_data = vs::ty::ViewDescr {
-                world: cgmath::Matrix4::from(rotation).into(),
-                view: (view * scale).into(),
-                proj: proj.into(),
-            };
+
             
-            uniform_buffer.next(uniform_data).unwrap()
-        };
         
-        let set = Arc::new(vulkano::descriptor::descriptor_set::PersistentDescriptorSet::start(pipeline.clone(), 0)
-                           .add_buffer(uniform_buffer_subbuffer).unwrap()
-                           .build().unwrap()
-        );
         
         let (image_num, acquire_future) =
             match swapchain::acquire_next_image(swapchain.clone(), None) {
@@ -310,27 +505,17 @@ fn main() {
             };
         
 
-        let command_buffer = {
-            let clear_values = vec![[0.0, 0.5, 0.5, 1.0].into(),ClearValue::Depth(1.0)];
-
-            AutoCommandBufferBuilder::primary_one_time_submit(
-                device.clone(), queue.family()).unwrap()
-                .begin_render_pass(framebuffers[image_num].clone(), false, clear_values)
-                .unwrap()
-                .draw(pipeline.clone(), &DynamicState::none(), vec!(vertex_buffer.clone()), set.clone(), () )
-                .unwrap()
-                .end_render_pass()
-                .unwrap()
-                .build()
-                .unwrap()
-        };
         
-        let future = previous_frame_end
-            .join(acquire_future)
-            .then_execute(queue.clone(), command_buffer)
-            .unwrap()
-            .then_swapchain_present(queue.clone(), swapchain.clone(), image_num)
+        let future = renderer.render(cgmath::Matrix4::from(rotation).into(),
+                                             (view * scale).into(),
+                                             proj.into(),
+                                             image_num,
+                                         &vertex_buffer,
+                                         previous_frame_end.join(acquire_future))
+            .then_swapchain_present(queue.clone(),
+                                    swapchain.clone(), image_num)
             .then_signal_fence_and_flush();
+
 
         match future {
             Ok(future) => {previous_frame_end = Box::new(future) as Box<_>;},
@@ -355,45 +540,3 @@ fn main() {
         if done {return ;}
     }
 }
-
-
-fn window_size_dependent_setup(
-    device: Arc<Device>,
-    vs: &vs::Shader,
-    fs: &fs::Shader,
-    images: &[Arc<SwapchainImage<Window>>],
-    render_pass: Arc<RenderPassAbstract+Send+Sync>)
-    ->(Arc<GraphicsPipelineAbstract+ Send+ Sync>, Vec<Arc<FramebufferAbstract + Send + Sync> >)
-{
-    let dimensions = images[0].dimensions();
-    let depth_buffer = AttachmentImage::new(device.clone(), dimensions, Format::D32Sfloat).unwrap();
-    let framebuffers = images.iter().map(|image|{
-        Arc::new(
-            Framebuffer::start(render_pass.clone())
-                .add(image.clone()).unwrap()
-                .add(depth_buffer.clone()).unwrap()
-                .build().unwrap()
-        )as Arc<FramebufferAbstract + Send + Sync>
-    }).collect::<Vec<_>>();
-    
-    let pipeline = Arc::new(GraphicsPipeline::start()
-                            .vertex_input(SingleBufferDefinition::<Vertex>::new())
-                            .vertex_shader(vs.main_entry_point(), ())
-                            .triangle_strip()
-                            .viewports_dynamic_scissors_irrelevant(1)
-                            .viewports(iter::once(Viewport {
-                                origin: [0.0, 0.0 ],
-                                dimensions: [dimensions[0] as f32, dimensions[1] as f32],
-                                depth_range: 0.0 .. 1.0, }
-                            ))
-                            .fragment_shader(fs.main_entry_point(), ())
-                            .depth_stencil_simple_depth()
-                            .render_pass(Subpass::from(render_pass.clone(), 0).unwrap())
-                            .build(device.clone())
-                            .expect("Pipeline creation failed")) as Arc<GraphicsPipelineAbstract+ Send+ Sync>;
-    (pipeline, framebuffers)
-}
-
-
-
-// TODO(Glinren): tell cargo that these are dependent on the shader files.
